@@ -11,7 +11,7 @@ ollama:
     size: 75Gi 
   ollama:
     gpu:
-      enabled: true
+      enabled: false
       type: nvidia
       number: 1
     models:
