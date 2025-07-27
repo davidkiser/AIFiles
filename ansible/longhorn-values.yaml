@@ -1,0 +1,3 @@
+defaultSettings:
+  defaultReplicaCount: 1
+  defaultDataPath: /var/lib/longhorn

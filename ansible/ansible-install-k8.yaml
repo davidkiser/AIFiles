@@ -8,10 +8,8 @@
     dns_servers: ["1.1.1.1", "8.8.8.8"]
     interface_name: "wlxb0594700cb17"
     local_user: "david"
-  vars_prompt:
-    - name: wifi_password
-      prompt: "Enter Wi-Fi Password"
-      private: yes
+  vars_files:
+    - ansible-vars.yaml
 
   tasks:
 
@@ -22,15 +20,13 @@
           network:
             version: 2
             renderer: networkd
-            wifis:
-              {{ interface_name }}:
+            ethernets:
+              enp7s0:
+                dhcp4: no
                 addresses: [{{ static_ip }}/24]
                 gateway4: {{ gateway }}
                 nameservers:
                   addresses: {{ dns_servers }}
-                access-points:
-                  "hyperboria":
-                     password: "{{ wifi_password }}" 
 
     - name: Fix permissions for Netplan files
       file:
@@ -197,6 +193,8 @@
           - torchvision
           - transformers
           - jupyterlab
+          - kubernetes
+          - openshift
         virtualenv: /home/{{ local_user }}/ai-venv
         virtualenv_command: python3 -m venv
         virtualenv_python: python3
@@ -241,4 +239,56 @@
       shell: snap install kubectl --classic
       args:
         creates: /snap/bin/kubectl
+
+    - name: Ensure Helm is installed
+      command: helm version
+      register: helm_check
+      failed_when: helm_check.rc != 0
+      ignore_errors: false
+
+    - name: Install required packages for Longhorn
+      apt:
+        name:
+          - open-iscsi
+          - nfs-common
+        state: present
+        update_cache: true
+
+    - name: Ensure iSCSI daemon is enabled and running
+      systemd:
+        name: iscsid
+        enabled: true
+        state: started
+
+    - name: Add Longhorn Helm repository
+      shell: |
+        helm repo add longhorn https://charts.longhorn.io
+        helm repo update
+      environment:
+        KUBECONFIG: "{{ lookup('env', 'KUBECONFIG') | default('/home/david/.kube/config', true) }}"
+    
+    - name: Ensure Longhorn namespace exists
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: "{{ longhorn_namespace }}"
+        state: present
+      environment:
+        K8S_AUTH_KUBECONFIG: "{{ K8S_AUTH_KUBECONFIG }}"
+
+    - name: Deploy Longhorn via Helm
+      shell: |
+        helm upgrade --install {{ longhorn_release_name }} {{ longhorn_helm_repo }} \
+          --namespace {{ longhorn_namespace }} \
+          -f {{ longhorn_values_file }}
+      environment:
+        KUBECONFIG: "{{ lookup('env', 'KUBECONFIG') | default('/home/david/.kube/config', true) }}"
+
+    - name: Display Longhorn dashboard access instructions
+      debug:
+        msg: |
+          Longhorn is installed.
+          To access the dashboard:
+            kubectl port-forward -n {{ longhorn_namespace }} svc/longhorn-frontend 8081:80
+            Visit: http://localhost:8081
 
