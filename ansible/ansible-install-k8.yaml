@@ -292,3 +292,96 @@
             kubectl port-forward -n {{ longhorn_namespace }} svc/longhorn-frontend 8081:80
             Visit: http://localhost:8081
 
+    - name: Ensure AI namespace exists
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: "{{ ai_namespace }}"
+        state: present
+      environment:
+        K8S_AUTH_KUBECONFIG: "{{ K8S_AUTH_KUBECONFIG }}"
+
+    - name: Add Traefik Helm repo
+      command: helm repo add traefik https://traefik.github.io/charts
+      changed_when: '"traefik" not in result.stdout'
+      register: result
+      ignore_errors: true
+
+    - name: Update Helm repos
+      command: helm repo update
+      ignore_errors: true
+
+    - name: Create a namespace for Traefik
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: traefik
+      environment:
+        K8S_AUTH_KUBECONFIG: "{{ K8S_AUTH_KUBECONFIG }}"
+
+    - name: Generate private key for localhost
+      command: openssl genpkey -algorithm RSA -out localhost-key.pem
+      args:
+        creates: localhost-key.pem
+      tags: create_tls_secret
+
+    - name: Generate self-signed certificate for localhost
+      command: >
+        openssl req -x509 -new -nodes -key localhost-key.pem
+        -sha256 -days 365 -out localhost-cert.pem
+        -subj "/CN=localhost"
+      args:
+        creates: localhost-cert.pem
+      tags: create_tls_secret
+
+    - name: Read localhost certificate
+      slurp:
+        src: localhost-cert.pem
+      register: cert_data
+      tags: create_tls_secret
+
+    - name: Read localhost key
+      slurp:
+        src: localhost-key.pem
+      register: key_data
+      tags: create_tls_secret
+
+    - name: Create Kubernetes Secret for localhost certificate
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: localhost-cert
+            namespace: traefik  # Ensure this matches Traefik's namespace
+          type: kubernetes.io/tls
+          data:
+            tls.crt: "{{ cert_data.content }}"
+            tls.key: "{{ key_data.content }}"
+      environment:
+        K8S_AUTH_KUBECONFIG: "{{ K8S_AUTH_KUBECONFIG }}"
+      ignore_errors: true
+      tags: create_tls_secret
+
+    - name: Clean up certificate files
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - localhost-cert.pem
+        - localhost-key.pem
+
+    - name: Install Traefik
+      command: helm upgrade traefik traefik/traefik --namespace=traefik   --set crds.enabled=true -f traefik-values.yaml
+      register: install_result
+      ignore_errors: true
+      environment:
+        KUBECONFIG: "{{ lookup('env', 'KUBECONFIG') | default('/home/david/.kube/config', true) }}"
+
+    - name: Print Traefik installation output
+      debug:
+        var: install_result.stdout
+

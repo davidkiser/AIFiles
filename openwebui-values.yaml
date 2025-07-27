@@ -6,19 +6,16 @@ ollama:
   fullnameOverride: "open-webui-ollama"
   persistentVolume:
     enabled: true
-    volumeName: ollama-pv
-    storageClass: ""
-    size: 75Gi 
-  ollama:
-    gpu:
-      enabled: false
-      type: nvidia
-      number: 1
-    models:
-      pull:
-        - llama3:8b
-      run:
-        - llama3:8b
+    existingClaim: ai-data
+  gpu:
+    enabled: true
+    type: nvidia
+    number: 1
+  models:
+    pull:
+      - llama4:maverick-q4_K_M
+    run:
+      - llama4:maverick-q4_K_M
   runtimeClassName: nvidia
 
 pipelines:
@@ -29,7 +26,7 @@ pipelines:
 
 tika:
   # -- Automatically install Apache Tika to extend Open WebUI
-  enabled: false
+  enabled: true
 
 # -- A list of Ollama API endpoints. These can be added in lieu of automatically installing the Ollama Helm chart, or in addition to it.
 ollamaUrls: []

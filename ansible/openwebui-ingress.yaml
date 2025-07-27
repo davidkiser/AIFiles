@@ -1,0 +1,17 @@
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: open-webui
+  namespace: ai
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`openwebui.localhost`)
+      kind: Rule
+      services:
+        - name: open-webui
+          port: 80
+  tls:
+    secretName: localhost-cert
+

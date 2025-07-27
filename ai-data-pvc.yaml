@@ -1,14 +1,13 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: open-webui-ollama
+  name: ai-data
   namespace: ai
 spec:
   accessModes:
     - ReadWriteOnce
   resources:
     requests:
-      storage: 75Gi
-  volumeName: ollama-pv
-  storageClassName: ""   # ✅ Must match the PV
+      storage: 500Gi
+  storageClassName: longhorn
 

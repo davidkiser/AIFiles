@@ -1,3 +1,5 @@
 defaultSettings:
   defaultReplicaCount: 1
   defaultDataPath: /var/lib/longhorn
+csi:
+  kubeletRootDir: /var/snap/microk8s/common/var/lib/kubelet
