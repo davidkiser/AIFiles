@@ -1,0 +1,45 @@
+- name: Install xrdp with Xfce for fast RDP
+  hosts: all
+  become: yes
+  vars:
+    local_user: "david"
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install xrdp and Xfce
+      apt:
+        name:
+          - xrdp
+          - xfce4
+          - xfce4-goodies
+        state: present
+
+    - name: Enable and start xrdp
+      systemd:
+        name: xrdp
+        enabled: yes
+        state: started
+
+    - name: Add xrdp user to ssl-cert group
+      user:
+        name: xrdp
+        groups: ssl-cert
+        append: yes
+
+    - name: Set Xfce as the default session
+      copy:
+        dest: "/home/{{ local_user }}/.xsession"
+        content: "startxfce4\n"
+        owner: "{{ local_user }}"
+        group: "{{ local_user }}"
+        mode: "0644"
+
+    - name: Make xrdp use .xsession
+      lineinfile:
+        path: /etc/xrdp/startwm.sh
+        regexp: '^exec'
+        line: 'exec /bin/sh /etc/X11/Xsession'
+

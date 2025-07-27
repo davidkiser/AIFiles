@@ -6,8 +6,12 @@
     static_ip: "192.168.1.240"
     gateway: "192.168.1.1"
     dns_servers: ["1.1.1.1", "8.8.8.8"]
-    interface_name: "ens33"  # Update if your interface is different
+    interface_name: "wlxb0594700cb17"
     local_user: "david"
+  vars_prompt:
+    - name: wifi_password
+      prompt: "Enter Wi-Fi Password"
+      private: yes
 
   tasks:
 
@@ -18,12 +22,24 @@
           network:
             version: 2
             renderer: networkd
-            ethernets:
+            wifis:
               {{ interface_name }}:
                 addresses: [{{ static_ip }}/24]
                 gateway4: {{ gateway }}
                 nameservers:
                   addresses: {{ dns_servers }}
+                access-points:
+                  "hyperboria":
+                     password: "{{ wifi_password }}" 
+
+    - name: Fix permissions for Netplan files
+      file:
+        path: "{{ item }}"
+        mode: '0600'
+      loop:
+        - /etc/netplan/01-netcfg.yaml
+        - /etc/netplan/50-cloud-init.yaml
+      ignore_errors: yes
 
     - name: Apply Netplan configuration
       command: netplan apply
@@ -209,4 +225,20 @@
       command: helm version
       register: helm_version
       changed_when: false
+
+    - name: Ensure snapd is installed
+      apt:
+        name: snapd
+        state: present
+        update_cache: yes
+
+    - name: Ensure core snap is installed
+      snap:
+        name: core
+        state: present
+
+    - name: Install kubectl via snap with classic confinement
+      shell: snap install kubectl --classic
+      args:
+        creates: /snap/bin/kubectl
 
