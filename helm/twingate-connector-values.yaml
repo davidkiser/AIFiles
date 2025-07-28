@@ -1,0 +1,9 @@
+apiVersion: twingate.com/v1beta
+kind: TwingateConnector
+metadata:
+  name: my-kubernetes-connector
+spec:
+  name: my-kubernetes-connector
+  imagePolicy:
+    provider: dockerhub
+    schedule: "0 0 * * *"

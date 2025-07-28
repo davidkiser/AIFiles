@@ -1,0 +1,7 @@
+twingateOperator:
+  existingAPIKeySecret:
+    name: twingate-api-token
+    key: api-token
+  network: "paranor"
+  remoteNetworkName: "HomeLab-Kubernetes"
+  logFormat: "plain"
