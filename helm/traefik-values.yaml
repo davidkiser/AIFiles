@@ -1,41 +1,38 @@
-# Enable Traefik Deployment
 deployment:
   enabled: true
+  strategy:
+    type: Recreate        # avoid bind races with hostNetwork
 
-# Enable the web (HTTP) entrypoint
+hostNetwork: true
+dnsPolicy: ClusterFirstWithHostNet
+
+# Define entrypoints via the chart 'ports' (do NOT duplicate with additionalArguments)
 ports:
   web:
-    expose: {}
-
+    port: 8080            # <- what you want to hit on localhost
+    expose: {}            # fine to leave
   websecure:
+    port: 8443            # optional; keep for later if you want HTTPS
     expose: {}
     tls:
       enabled: true
+  traefik:                # move admin/dashboard off 8080 to avoid collision
+    port: 9000
+    expose: {}
+    
+# OPTIONAL: if you don't need the dashboard, you can disable it instead of moving it:
+# additionalArguments:
+#   - "--api.dashboard=false"
 
-# Enable TLS and use our custom certificate
-tls:
-  stores:
-    default:
-      defaultCertificate:
-        secretName: localhost-cert
-
-# HTTP to HTTPS redirection (replaces removed `redirectTo`)
-additionalArguments:
-  - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
-  - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
-
-# Enable Kubernetes CRD and Ingress providers
+# Providers remain the same
 providers:
   kubernetesCRD:
     enabled: true
   kubernetesIngress:
     enabled: true
 
-# Enable access logs
 accessLog:
   enabled: true
-
-# Set logging level
 logs:
   general:
     level: INFO

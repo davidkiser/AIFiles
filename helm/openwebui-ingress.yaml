@@ -5,13 +5,11 @@ metadata:
   namespace: ai
 spec:
   entryPoints:
-    - websecure
+    - web
   routes:
-    - match: Host(`openwebui.localhost`)
+    - match: Host(`localhost`) || Host(`openwebui.localhost`)
       kind: Rule
       services:
         - name: open-webui
           port: 80
-  tls:
-    secretName: localhost-cert
 
