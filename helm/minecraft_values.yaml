@@ -1,0 +1,46 @@
+USER-SUPPLIED VALUES:
+livenessProbe:
+  initialDelaySeconds: 60
+  periodSeconds: 30
+minecraftServer:
+  difficulty: normal
+  enableCommandBlock: true
+  eula: "TRUE"
+  jvmOpts: -XX:+UseG1GC -XX:+UnlockExperimentalVMOptions -XX:MaxGCPauseMillis=200
+    -XX:+ParallelRefProcEnabled -XX:+AlwaysPreTouch
+  maxPlayers: 20
+  memory: 4G
+  motd: Glenn and Davids Test Minecraft Server
+  onlineMode: false 
+  ops: YourMCName
+  rcon:
+    enabled: true
+    password: changeMeStrong
+    port: 25575
+  simulationDistance: 8
+  type: FORGE
+  version: 1.20.1
+  viewDistance: 10
+  whiteList: false
+  spawnProtection: 0
+persistence:
+  dataDir:
+    Size: 10Gi
+    enabled: true
+    storageClass: longhorn
+readinessProbe:
+  initialDelaySeconds: 30
+  periodSeconds: 15
+resources:
+  limits:
+    cpu: "2"
+    memory: 6Gi
+  requests:
+    cpu: 500m
+    memory: 2Gi
+env:
+  ENFORCE_SECURE_PROFILE: "false"
+serviceType: LoadBalancer
+loadBalancerIP: 192.168.1.241
+externalTrafficPolicy: Cluster
+forceReDownload: true
