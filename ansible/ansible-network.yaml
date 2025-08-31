@@ -1,0 +1,145 @@
+---
+# ansible-network.yaml (NetworkManager-centric)
+- name: Configure static IP with Netplan (Ubuntu 24.04) and ensure it takes effect
+  hosts: localhost
+  connection: local
+  become: yes
+  gather_facts: true
+
+  vars:
+    static_ip: "192.168.1.240"
+    gateway: "192.168.1.1"
+    dns_servers: ["1.1.1.1", "8.8.8.8"]
+    interface_name: ""           # set -e "interface_name=enp4s0" or leave blank to auto-detect
+    netplan_file: "/etc/netplan/01-netcfg.yaml"
+    # Force NM because it's managing your NIC; avoids NM fighting networkd
+    netplan_renderer_mode: "NetworkManager"
+
+  pre_tasks:
+    - name: Resolve target interface (prefer explicit var, else detected default)
+      ansible.builtin.set_fact:
+        target_iface: "{{ (interface_name | default('') | trim) or (ansible_default_ipv4.interface | default('')) }}"
+
+    - name: Fail if we could not determine interface
+      ansible.builtin.fail:
+        msg: "Could not determine network interface. Set -e interface_name=<dev>."
+      when: target_iface | length == 0
+
+  tasks:
+    - name: Summary
+      ansible.builtin.debug:
+        msg:
+          - "Interface: {{ target_iface }}"
+          - "Static IP: {{ static_ip }}/24"
+          - "Gateway:   {{ gateway }}"
+          - "DNS:       {{ dns_servers | join(' ') }}"
+          - "Renderer:  NetworkManager (forced)"
+
+    - name: Backup existing netplan (if present)
+      ansible.builtin.copy:
+        src: "{{ netplan_file }}"
+        dest: "{{ netplan_file }}.bak"
+        remote_src: true
+      ignore_errors: true
+
+    - name: Remove cloud-init netplan to avoid overrides
+      ansible.builtin.file:
+        path: /etc/netplan/50-cloud-init.yaml
+        state: absent
+
+    - name: Write Netplan for Ethernet (renderer=NetworkManager)
+      ansible.builtin.copy:
+        dest: "{{ netplan_file }}"
+        mode: "0644"
+        content: |
+          network:
+            version: 2
+            renderer: NetworkManager
+            ethernets:
+              {{ target_iface }}:
+                dhcp4: no
+                addresses:
+                  - {{ static_ip }}/24
+                routes:
+                  - to: default
+                    via: {{ gateway }}
+                nameservers:
+                  addresses:
+                  {% for ns in dns_servers %}
+                    - {{ ns }}
+                  {% endfor %}
+      notify: Apply netplan
+
+    # --- Correct NM handling: get and modify the actual connection bound to the device ---
+
+    - name: Ensure NetworkManager is running
+      ansible.builtin.shell: systemctl is-active --quiet NetworkManager || systemctl start NetworkManager
+      changed_when: true
+
+    - name: Get active NM connection name for interface
+      ansible.builtin.shell: nmcli -g GENERAL.CONNECTION device show "{{ target_iface }}"
+      register: nm_conn
+      changed_when: false
+
+    - name: Create a connection if none exists
+      ansible.builtin.shell: |
+        set -e
+        nmcli con add type ethernet ifname "{{ target_iface }}" con-name "static-{{ target_iface }}" || true
+        echo "static-{{ target_iface }}"
+      register: nm_created
+      changed_when: true
+      when: (nm_conn.stdout | trim) == ''
+
+    - name: Determine connection name to use
+      ansible.builtin.set_fact:
+        nm_conn_name: "{{ (nm_conn.stdout | trim) or (nm_created.stdout | trim) }}"
+
+    - name: Configure static IPv4 on NM connection and bring it up
+      ansible.builtin.shell: |
+        set -e
+        nmcli con mod "{{ nm_conn_name }}" \
+          ipv4.addresses "{{ static_ip }}/24" \
+          ipv4.gateway "{{ gateway }}" \
+          ipv4.dns "{{ dns_servers | join(' ') }}" \
+          ipv4.method manual autoconnect yes
+        nmcli con down "{{ nm_conn_name }}" || true
+        nmcli con up   "{{ nm_conn_name }}"
+      changed_when: true
+
+    # --- Wait until the address applies ---
+
+    - name: Wait for static IP to appear on interface
+      ansible.builtin.command: ip -4 -o addr show dev {{ target_iface }}
+      register: ip_show
+      changed_when: false
+      retries: 10
+      delay: 2
+      until: ip_show.stdout is search('inet\\s+{{ static_ip }}/24')
+
+    - name: Verify default route
+      ansible.builtin.command: ip route
+      register: ip_route
+      changed_when: false
+
+    - name: Assert default route via gateway
+      ansible.builtin.assert:
+        that:
+          - "'default via {{ gateway }}' in ip_route.stdout"
+        fail_msg: "Default route via {{ gateway }} not found. Routes:\n{{ ip_route.stdout }}"
+        success_msg: "Default route via {{ gateway }} is present."
+
+    - name: Show DNS status (best-effort)
+      ansible.builtin.command: resolvectl status
+      register: resolvectl_out
+      changed_when: false
+      failed_when: false
+
+    - name: Display DNS summary
+      ansible.builtin.debug:
+        var: resolvectl_out.stdout
+
+  handlers:
+    - name: Apply netplan
+      ansible.builtin.command: netplan apply
+      changed_when: true
+

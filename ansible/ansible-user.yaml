@@ -1,0 +1,16 @@
+- name: Configure Git global settings
+  hosts: all
+  become: false   # no need for root, runs as the target user
+  tasks:
+    - name: Set Git global user.name
+      community.general.git_config:
+        name: user.name
+        scope: global
+        value: "David Kiser"
+
+    - name: Set Git global user.email
+      community.general.git_config:
+        name: user.email
+        scope: global
+        value: "dgkiser@yahoo.com"
+

@@ -1,0 +1,83 @@
+# save as: ansible-python.yaml
+---
+# Play: create and use a local venv for all Python tooling (no system pip writes)
+- name: Create Python venv for david (and install deps into it)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: yes
+  vars:
+    venv_path: /home/david/ai-venv
+    venv_owner: david
+    venv_group: david
+
+  tasks:
+    - name: Ensure base packages for venv are installed
+      ansible.builtin.apt:
+        name:
+          - python3
+          - python3-venv
+          - python3-pip
+        state: present
+        update_cache: yes
+
+    - name: Ensure david's home exists with correct ownership (usually already true)
+      ansible.builtin.file:
+        path: /home/david
+        state: directory
+        owner: "{{ venv_owner }}"
+        group: "{{ venv_group }}"
+        mode: "0755"
+
+    - name: Create virtual environment if missing
+      become_user: "{{ venv_owner }}"
+      ansible.builtin.command: "python3 -m venv {{ venv_path }}"
+      args:
+        creates: "{{ venv_path }}/bin/activate"
+
+    - name: Upgrade pip/setuptools/wheel inside venv
+      become_user: "{{ venv_owner }}"
+      ansible.builtin.pip:
+        name:
+          - pip
+          - setuptools
+          - wheel
+        state: latest
+        virtualenv: "{{ venv_path }}"
+        virtualenv_command: "python3 -m venv"
+
+    - name: Install k8s Python dependencies IN the venv (avoids PEP 668)
+      become_user: "{{ venv_owner }}"
+      ansible.builtin.pip:
+        name:
+          - kubernetes
+          - openshift
+          - requests
+          - pyyaml
+        state: latest
+        virtualenv: "{{ venv_path }}"
+        virtualenv_command: "python3 -m venv"
+
+    - name: Add handy alias to activate venv
+      become_user: "{{ venv_owner }}"
+      ansible.builtin.lineinfile:
+        path: /home/david/.bashrc
+        create: yes
+        owner: "{{ venv_owner }}"
+        group: "{{ venv_group }}"
+        mode: "0644"
+        line: 'alias ai-env="source {{ venv_path }}/bin/activate"'
+        insertafter: EOF
+
+    # Optional but useful: tell Ansible to use the venv Python from now on
+    - name: Set interpreter to venv for later plays/tasks
+      ansible.builtin.set_fact:
+        ansible_python_interpreter: "{{ venv_path }}/bin/python"
+
+    - name: Sanity check imports using venv interpreter
+      become: false
+      ansible.builtin.command: >
+        {{ venv_path }}/bin/python -c
+        "import sys, kubernetes, openshift, requests, yaml; print('ok', sys.version)"
+      changed_when: false
+
