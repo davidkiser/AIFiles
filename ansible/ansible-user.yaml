@@ -1,6 +1,9 @@
 - name: Configure Git global settings
   hosts: all
   become: false   # no need for root, runs as the target user
+  vars:
+    user: david
+
   tasks:
     - name: Set Git global user.name
       community.general.git_config:
@@ -14,3 +17,12 @@
         scope: global
         value: "dgkiser@yahoo.com"
 
+    - name: Add NO_AT_BRIDGE env var to .bashrc
+      ansible.builtin.lineinfile:
+        path: "/home/{{ user }}/.bashrc"
+        line: 'export NO_AT_BRIDGE=1'
+        create: yes
+        owner: "{{ user }}"
+        group: "{{ user }}"
+        mode: "0644"
+        insertafter: EOF

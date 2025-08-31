@@ -2,6 +2,7 @@ apiVersion: twingate.com/v1beta
 kind: TwingateResource
 metadata:
   name: llm
+  namespace: twingate
 spec:
   name: llm
   address: open-webui.ai.svc.cluster.local

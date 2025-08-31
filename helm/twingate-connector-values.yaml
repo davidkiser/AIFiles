@@ -2,6 +2,7 @@ apiVersion: twingate.com/v1beta
 kind: TwingateConnector
 metadata:
   name: my-kubernetes-connector
+  namespace: twingate
 spec:
   name: my-kubernetes-connector
   imagePolicy:

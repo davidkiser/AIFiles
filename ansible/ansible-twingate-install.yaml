@@ -1,0 +1,190 @@
+---
+- name: Install Twingate Operator, Connector, and Resource (uses /home/david/ai-venv)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+
+  vars:
+    ns: twingate
+    venv_path: /home/david/ai-venv
+    venv_python: /home/david/ai-venv/bin/python
+    kubeconfig_path: "{{ lookup('env','KUBECONFIG') | default('/home/david/.kube/config', true) }}"
+    helm_values: /home/david/Code/AIFiles/helm/twingate-values.yaml
+    connector_yaml: /home/david/Code/AIFiles/helm/twingate-connector-values.yaml
+    resource_yaml:  /home/david/Code/AIFiles/helm/twingate-llm-resource.yaml
+    secret_name: twingate-api-token
+    secret_key: api-token
+    helm_chart: oci://ghcr.io/twingate/helmcharts/twingate-operator
+    release_name: twingate
+
+    # Force the venv interpreter for all tasks
+    ansible_python_interpreter: "{{ venv_python }}"
+
+  vars_prompt:
+    - name: twingate_api_token
+      prompt: "Paste your new TWINGATE API token (leave blank to keep existing)"
+      private: yes
+      confirm: no
+      default: ""
+
+  pre_tasks:
+    - name: Ensure venv base packages are present
+      become: true
+      ansible.builtin.apt:
+        name:
+          - python3
+          - python3-venv
+          - python3-pip
+        state: present
+        update_cache: yes
+
+    - name: Ensure venv exists
+      become: true
+      become_user: david
+      ansible.builtin.command: "python3 -m venv {{ venv_path }}"
+      args:
+        creates: "{{ venv_path }}/bin/activate"
+
+    - name: Upgrade pip/setuptools/wheel in venv
+      ansible.builtin.pip:
+        name: [pip, setuptools, wheel]
+        state: latest
+        virtualenv: "{{ venv_path }}"
+        virtualenv_command: "python3 -m venv"
+
+    - name: Ensure Kubernetes Python dependencies are installed in venv
+      ansible.builtin.pip:
+        name:
+          - kubernetes
+          - openshift
+          - requests
+          - pyyaml
+        state: latest
+        virtualenv: "{{ venv_path }}"
+        virtualenv_command: "python3 -m venv"
+
+  tasks:
+    - name: Sanity check venv interpreter and kubernetes import
+      ansible.builtin.command: >
+        {{ ansible_python_interpreter }} -c "import sys,kubernetes; print(sys.executable)"
+      changed_when: false
+
+    - name: Ensure namespace exists
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: "{{ ns }}"
+        state: present
+
+    - name: (Re)create Twingate API token Secret (only if provided)
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ secret_name }}"
+            namespace: "{{ ns }}"
+          type: Opaque
+          stringData:
+            api-token: "{{ twingate_api_token }}"
+      when: twingate_api_token | length > 0
+
+    - name: Install/upgrade Twingate Operator (Helm via OCI)
+      ansible.builtin.command: >
+        helm upgrade --install {{ release_name }}
+        {{ helm_chart }}
+        -n {{ ns }} --create-namespace
+        -f {{ helm_values }}
+        --wait
+      register: helm_install
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+
+    - name: Wait for Twingate operator deployment to be ready
+      ansible.builtin.shell: |
+        set -euo pipefail
+        DEPLOY=$(kubectl -n {{ ns }} get deploy -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -E 'twingate|operator' | head -n1 || true)
+        if [ -z "$DEPLOY" ]; then
+          echo "No operator deployment found in namespace {{ ns }}"
+          exit 1
+        fi
+        kubectl -n {{ ns }} rollout status deploy/$DEPLOY --timeout=5m
+      args:
+        executable: /bin/bash
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+
+    - name: Apply Twingate Connector CRD (into {{ ns }})
+      kubernetes.core.k8s:
+        state: present
+        namespace: "{{ ns }}"
+        src: "{{ connector_yaml }}"
+
+    - name: Apply Twingate Resource CRD (into {{ ns }})
+      kubernetes.core.k8s:
+        state: present
+        namespace: "{{ ns }}"
+        src: "{{ resource_yaml }}"
+
+    # --- Summary Block using JSON (Approach B) ---
+    - name: Summary (core K8s objects)
+      ansible.builtin.command: >
+        kubectl -n {{ ns }} get deploy,sts,po,svc,secret -o wide
+      register: core_summary
+      changed_when: false
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+
+    - name: Print core objects summary
+      ansible.builtin.debug:
+        var: core_summary.stdout_lines
+
+    - name: Get all CRDs as JSON
+      ansible.builtin.command: kubectl get crd -o json
+      register: crds_json
+      changed_when: false
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+
+    - name: Parse CRDs JSON
+      ansible.builtin.set_fact:
+        crds_parsed: "{{ crds_json.stdout | from_json }}"
+
+    - name: Extract Twingate CRD names (fixed)
+      ansible.builtin.set_fact:
+        twingate_crds: >-
+          {{ (crds_parsed.get('items', []) |
+              map(attribute='metadata.name') |
+              select('search', 'twingate') |
+              list) }}
+
+    - name: Print Twingate CRDs present
+      ansible.builtin.debug:
+        var: twingate_crds
+
+    - name: Show Twingate custom resources
+      ansible.builtin.shell: |
+        set -eu
+        for crd in \
+          twingateconnectors.twingate.com \
+          twingateresources.twingate.com \
+          twingategroups.twingate.com \
+          twingateresourceaccesses.twingate.com; do
+          if kubectl get crd "$crd" >/dev/null 2>&1; then
+            echo "--- $crd ---"
+            kubectl -n {{ ns }} get "$crd" || true
+          fi
+        done
+      args:
+        executable: /bin/bash
+      register: twingate_resources
+      changed_when: false
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+
+    - name: Print Twingate custom resources
+      ansible.builtin.debug:
+        var: twingate_resources.stdout_lines
+
