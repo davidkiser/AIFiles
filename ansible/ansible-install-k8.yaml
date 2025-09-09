@@ -51,13 +51,12 @@
         state: present
         update_cache: true
 
-
     - name: Install MicroK8s
       snap:
         name: microk8s
         classic: true
 
-    - name: Add 'david' to sudo and docker groups
+    - name: Add '{{ local_user }}' to sudo and docker groups
       user:
         name: "{{ local_user }}"
         groups: sudo,docker,microk8s
@@ -73,11 +72,6 @@
           - git
         state: present
         update_cache: true
-
-    - name: Install MicroK8s
-      snap:
-        name: microk8s
-        classic: true
 
     - name: Wait for MicroK8s to be ready
       shell: microk8s status --wait-ready
@@ -246,7 +240,7 @@
         helm repo update
       environment:
         KUBECONFIG: "{{ lookup('env', 'KUBECONFIG') | default('/home/david/.kube/config', true) }}"
-    
+
     - name: Ensure Longhorn namespace exists
       kubernetes.core.k8s:
         api_version: v1
@@ -281,135 +275,118 @@
       environment:
         K8S_AUTH_KUBECONFIG: "{{ K8S_AUTH_KUBECONFIG }}"
 
-    - name: Add Traefik Helm repo
-      command: helm repo add traefik https://traefik.github.io/charts
-      changed_when: '"traefik" not in result.stdout'
-      register: result
-      ignore_errors: true
+    # --- Open WebUI: repo + install (NodePort) ---
+    - name: Add/ensure Open WebUI Helm repo
+      ansible.builtin.command: >
+        helm repo add open-webui https://helm.openwebui.com
+      register: ow_repo_add
+      changed_when: >
+        ('has been added' in (ow_repo_add.stdout + ow_repo_add.stderr))
+        or ('already exists' not in (ow_repo_add.stdout + ow_repo_add.stderr))
+      failed_when: ow_repo_add.rc != 0 and
+                   ('already exists' not in (ow_repo_add.stdout + ow_repo_add.stderr))
 
-    - name: Update Helm repos
-      command: helm repo update
-      ignore_errors: true
+    - name: Helm repo update
+      ansible.builtin.command: helm repo update
 
-    - name: Create a namespace for Traefik
-      kubernetes.core.k8s:
-        state: present
-        definition:
-          apiVersion: v1
-          kind: Namespace
-          metadata:
-            name: traefik
+    - name: Install/upgrade Open WebUI with NodePort
+      ansible.builtin.command: >
+        helm upgrade --install open-webui open-webui/open-webui
+        -n ai --create-namespace
+        -f /home/david/Code/AIFiles/helm/openwebui-values.yaml
+        --set service.type=NodePort
+        --set service.nodePort=30080
+        --wait
+      register: ow_install
       environment:
-        K8S_AUTH_KUBECONFIG: "{{ K8S_AUTH_KUBECONFIG }}"
+        KUBECONFIG: "{{ lookup('env', 'KUBECONFIG') | default('/home/david/.kube/config', true) }}"
 
-    - name: Generate private key for localhost
-      command: openssl genpkey -algorithm RSA -out localhost-key.pem
-      args:
-        creates: localhost-key.pem
-      tags: create_tls_secret
-
-    - name: Generate self-signed certificate for localhost
-      command: >
-        openssl req -x509 -new -nodes -key localhost-key.pem
-        -sha256 -days 365 -out localhost-cert.pem
-        -subj "/CN=localhost"
-      args:
-        creates: localhost-cert.pem
-      tags: create_tls_secret
-
-    - name: Read localhost certificate
-      slurp:
-        src: localhost-cert.pem
-      register: cert_data
-      tags: create_tls_secret
-
-    - name: Read localhost key
-      slurp:
-        src: localhost-key.pem
-      register: key_data
-      tags: create_tls_secret
-
-    - name: Create Kubernetes Secret for localhost certificate
-      kubernetes.core.k8s:
-        definition:
-          apiVersion: v1
-          kind: Secret
-          metadata:
-            name: localhost-cert
-            namespace: traefik  # Ensure this matches Traefik's namespace
-          type: kubernetes.io/tls
-          data:
-            tls.crt: "{{ cert_data.content }}"
-            tls.key: "{{ key_data.content }}"
+    - name: Show Open WebUI service
+      ansible.builtin.command: kubectl -n ai get svc open-webui -o wide
+      changed_when: false
       environment:
-        K8S_AUTH_KUBECONFIG: "{{ K8S_AUTH_KUBECONFIG }}"
-      ignore_errors: true
-      tags: create_tls_secret
+        KUBECONFIG: "{{ lookup('env', 'KUBECONFIG') | default('/home/david/.kube/config', true) }}"
 
-    - name: Clean up certificate files
-      file:
+    - name: Wait for Open WebUI StatefulSet to be ready
+      ansible.builtin.command: >
+        kubectl -n ai rollout status statefulset/open-webui --timeout=5m
+      environment:
+        KUBECONFIG: "{{ lookup('env', 'KUBECONFIG') | default('/home/david/.kube/config', true) }}"
+
+# ========================= UNINSTALL / CLEANUP =========================
+- name: Uninstall/cleanup MicroK8s and k8s add-ons
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    local_user: "david"
+    kubeconfig_path: "/home/{{ local_user }}/.kube/config"
+  tasks:
+    - name: Try to uninstall Helm releases (best-effort)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        export KUBECONFIG="{{ kubeconfig_path }}"
+        for pair in "ai open-webui" "longhorn longhorn"; do
+          set -- $pair
+          ns="$1"; rel="$2"
+          if helm status "$rel" -n "$ns" >/dev/null 2>&1; then
+            helm uninstall "$rel" -n "$ns" || true
+          fi
+        done
+      args:
+        executable: /bin/bash
+      changed_when: false
+      failed_when: false
+      tags: [uninstall]
+
+    - name: Delete namespaces (best-effort)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        export KUBECONFIG="{{ kubeconfig_path }}"
+        for ns in ai longhorn; do
+          kubectl delete ns "$ns" --ignore-not-found --wait=false || true
+        done
+      args: { executable: /bin/bash }
+      changed_when: false
+      tags: [uninstall]
+
+    - name: Stop MicroK8s (ignore if absent)
+      ansible.builtin.command: microk8s stop
+      register: stop_out
+      failed_when: false
+      changed_when: "'stopped' in (stop_out.stdout | default('')) or stop_out.rc == 0"
+      tags: [uninstall]
+
+    - name: Reset MicroK8s and destroy storage (DANGEROUS)
+      ansible.builtin.command: microk8s reset --destroy-storage
+      register: reset_out
+      failed_when: false
+      changed_when: reset_out.rc == 0
+      tags: [uninstall]
+
+    - name: Remove MicroK8s snap (purge)
+      ansible.builtin.snap:
+        name: microk8s
+        state: absent
+      tags: [uninstall]
+
+    - name: Clean leftover MicroK8s & CNI directories
+      ansible.builtin.file:
         path: "{{ item }}"
         state: absent
       loop:
-        - localhost-cert.pem
-        - localhost-key.pem
+        - /var/snap/microk8s
+        - /var/lib/cni
+        - /etc/cni/net.d
+        - /opt/cni/bin
+      tags: [uninstall]
 
-# install-k8-traefik.yaml
-- name: Install/upgrade Traefik via Helm module
-  hosts: localhost
-  connection: local
-  gather_facts: true
-  become: false  # IMPORTANT: don't escalate; keeps venv interpreter
-  vars:
-    # Make the setup module and all tasks use the venv Python
-    ansible_python_interpreter: /home/david/ai-venv/bin/python
-
-    traefik_ns: traefik
-    traefik_release: traefik
-    traefik_repo_name: traefik
-    traefik_repo_url: https://traefik.github.io/charts
-    traefik_chart: traefik/traefik
-    traefik_values: /home/david/Code/AIFiles/helm/traefik-values.yaml  # use absolute path to avoid cwd surprises
-
-  # You need these collections installed via:
-  #   ansible-galaxy collection install community.kubernetes kubernetes.core
-  collections:
-    - community.kubernetes
-    - kubernetes.core
-
-  # Ensure kubectl/helm talk to the right cluster
-  environment:
-    KUBECONFIG: "{{ lookup('env','KUBECONFIG') | default('/home/david/.kube/config', true) }}"
-
-  tasks:
-    - name: Sanity check interpreter and kubernetes import
-      command: "{{ ansible_python_interpreter }} -c 'import sys, kubernetes; print(sys.executable)'"
+    - name: Remove stray CNI bridges (ignore errors)
+      ansible.builtin.shell: |
+        ip link delete cni0 2>/dev/null || true
+        ip link delete flannel.1 2>/dev/null || true
+      args: { executable: /bin/bash }
       changed_when: false
-
-    - name: Ensure namespace exists
-      kubernetes.core.k8s:
-        api_version: v1
-        kind: Namespace
-        name: "{{ traefik_ns }}"
-        state: present
-
-    - name: Add/ensure Traefik Helm repo (module version)
-      community.kubernetes.helm_repository:
-        name: "{{ traefik_repo_name }}"
-        repo_url: "{{ traefik_repo_url }}"
-
-    - name: Install/upgrade Traefik (with CRDs)
-      community.kubernetes.helm:
-        name: "{{ traefik_release }}"
-        chart_ref: "{{ traefik_chart }}"
-        release_namespace: "{{ traefik_ns }}"
-        update_repo_cache: true
-        values_files:
-          - "{{ traefik_values }}"
-        set_values:
-          - { name: "crds.enabled", value: "true" }
-        state: present
-
-    - name: Wait for Traefik deployment to be available
-      command: kubectl -n {{ traefik_ns }} rollout status deploy/traefik --timeout=5m
+      tags: [uninstall]
+# ======================= END UNINSTALL / CLEANUP =======================
 

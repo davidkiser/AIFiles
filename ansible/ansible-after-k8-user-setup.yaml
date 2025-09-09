@@ -1,0 +1,37 @@
+- name: Ensure .kube dir exists for david
+  become: true
+  ansible.builtin.file:
+    path: /home/david/.kube
+    state: directory
+    owner: david
+    group: david
+    mode: "0700"
+
+- name: Fetch MicroK8s kubeconfig
+  become: true
+  ansible.builtin.command: microk8s config
+  register: mk_cfg
+  changed_when: false
+
+- name: Install kubeconfig for david
+  become: true
+  ansible.builtin.copy:
+    dest: /home/david/.kube/config
+    content: "{{ mk_cfg.stdout }}"
+    owner: david
+    group: david
+    mode: "0600"
+
+- name: Ensure david is in microk8s group
+  become: true
+  ansible.builtin.user:
+    name: david
+    groups: microk8s
+    append: true
+
+- name: Select microk8s context
+  ansible.builtin.command: kubectl config use-context microk8s
+  environment:
+    KUBECONFIG: /home/david/.kube/config
+  changed_when: false
+
