@@ -1,0 +1,92 @@
+# setup-samba.yml
+- name: Set up Samba share on all hosts
+  hosts: all
+  become: true
+  vars:
+    smb_share_name: "share"
+    smb_share_path: "/srv/share"
+
+    # Load password directly from .env file using ini lookup
+    smb_users:
+      - name: "glenn"
+        password: "{{ lookup('ini', 'SMB_PASSWORD type=properties file=.env') }}"
+
+  tasks:
+    - name: Ensure required packages are present
+      apt:
+        name:
+          - samba
+          - samba-common-bin
+        state: present
+        update_cache: yes
+
+    - name: Ensure share directory exists
+      file:
+        path: "{{ smb_share_path }}"
+        state: directory
+        owner: root
+        group: sambashare
+        mode: "2770"
+
+    - name: Ensure Linux users exist and are in sambashare group
+      user:
+        name: "{{ item.name }}"
+        shell: /usr/sbin/nologin
+        groups: sambashare
+        append: yes
+        create_home: no
+      loop: "{{ smb_users }}"
+
+    - name: Ensure Samba users exist (set passwords non-interactively)
+      shell: |
+        set -e
+        if pdbedit -L | awk -F: '{print $1}' | grep -qx "{{ item.name }}"; then
+          exit 0
+        fi
+        (printf '%s\n%s\n' "{{ item.password }}" "{{ item.password }}" | smbpasswd -s -a "{{ item.name }}")
+      args:
+        executable: /bin/bash
+      register: smb_user_added
+      changed_when: smb_user_added.rc == 0 and "'Added user' in smb_user_added.stdout"
+      failed_when: smb_user_added.rc not in [0]
+      no_log: true
+      loop: "{{ smb_users }}"
+
+    - name: Write /etc/samba/smb.conf
+      copy:
+        dest: /etc/samba/smb.conf
+        content: |
+          [global]
+              workgroup = WORKGROUP
+              server string = %h server (Samba)
+              log file = /var/log/samba/log.%m
+              max log size = 1000
+              logging = file
+              server role = standalone server
+              map to guest = bad user
+              security = user
+              server min protocol = SMB2_10
+              server max protocol = SMB3
+
+          [{{ smb_share_name }}]
+              path = {{ smb_share_path }}
+              browseable = yes
+              writable = yes
+              create mask = 0660
+              directory mask = 2770
+              force group = sambashare
+              valid users = @sambashare
+      notify: Restart smbd
+
+    - name: Ensure smbd is enabled and running
+      systemd:
+        name: smbd
+        enabled: true
+        state: started
+
+  handlers:
+    - name: Restart smbd
+      systemd:
+        name: smbd
+        state: restarted
+
