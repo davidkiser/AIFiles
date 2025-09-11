@@ -8,6 +8,9 @@ ollama:
   enabled: true
   fullnameOverride: "open-webui-ollama"
 
+  image:
+    tag: "0.11.10" 
+
   persistentVolume:
     enabled: true
     existingClaim: ai-data
@@ -28,7 +31,7 @@ ollama:
     limits:
       cpu: "8"
       memory: "60Gi"
-      nvidia.com/gpu: 1     # <— added
+      nvidia.com/gpu: 1      # <— added
 
   # Keep original envs
   extraEnvVars:
@@ -121,7 +124,7 @@ replicaCount: 1
 
 image:
   repository: ghcr.io/open-webui/open-webui
-  tag: ""            # keep chart default (AppVersion)
+  tag: ""           # keep chart default (AppVersion)
   pullPolicy: IfNotPresent
 
 serviceAccount:
@@ -217,4 +220,3 @@ extraObjects:
           port: 11434
           targetPort: 11434
           nodePort: 31434
-

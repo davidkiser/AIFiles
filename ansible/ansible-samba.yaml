@@ -1,15 +1,26 @@
 # setup-samba.yml
-- name: Set up Samba share on all hosts
+- name: Set up Samba share with proper write perms on all hosts
   hosts: all
   become: true
+  collections:
+    - ansible.posix
+
   vars:
     smb_share_name: "share"
     smb_share_path: "/srv/share"
 
-    # Load password directly from .env file using ini lookup
+    # Pull passwords from .env; per-user vars are optional.
+    glenn_password: "{{ lookup('ini', 'SMB_PASSWORD_GLENN type=properties file=.env') | default('', true) }}"
+    david_password: "{{ lookup('ini', 'SMB_PASSWORD_DAVID type=properties file=.env') | default('', true) }}"
+    fallback_password: "{{ lookup('ini', 'SMB_PASSWORD type=properties file=.env') }}"
+
     smb_users:
       - name: "glenn"
-        password: "{{ lookup('ini', 'SMB_PASSWORD type=properties file=.env') }}"
+        set_nologin: true               # create as service-style account if missing
+        password: "{{ glenn_password if glenn_password|length > 0 else fallback_password }}"
+      - name: "david"
+        set_nologin: false              # existing real user; don't change shell
+        password: "{{ david_password if david_password|length > 0 else fallback_password }}"
 
   tasks:
     - name: Ensure required packages are present
@@ -17,10 +28,16 @@
         name:
           - samba
           - samba-common-bin
+          - acl
         state: present
         update_cache: yes
 
-    - name: Ensure share directory exists
+    - name: Ensure sambashare group exists
+      group:
+        name: sambashare
+        state: present
+
+    - name: Ensure share directory exists, owned by root:sambashare and setgid
       file:
         path: "{{ smb_share_path }}"
         state: directory
@@ -31,13 +48,14 @@
     - name: Ensure Linux users exist and are in sambashare group
       user:
         name: "{{ item.name }}"
-        shell: /usr/sbin/nologin
+        state: present
+        shell: "{{ '/usr/sbin/nologin' if item.set_nologin else omit }}"
         groups: sambashare
         append: yes
-        create_home: no
+        create_home: "{{ false if item.set_nologin else omit }}"
       loop: "{{ smb_users }}"
 
-    - name: Ensure Samba users exist (set passwords non-interactively)
+    - name: Ensure Samba users exist (add if missing)
       shell: |
         set -e
         if pdbedit -L | awk -F: '{print $1}' | grep -qx "{{ item.name }}"; then
@@ -52,7 +70,25 @@
       no_log: true
       loop: "{{ smb_users }}"
 
-    - name: Write /etc/samba/smb.conf
+    # ACLs so everyone in sambashare can write, regardless of creator
+    - name: Ensure ACCESS ACL for sambashare group on the share
+      ansible.posix.acl:
+        path: "{{ smb_share_path }}"
+        entity: sambashare
+        etype: group
+        permissions: rwx
+        state: present
+
+    - name: Ensure DEFAULT ACL for sambashare group on the share
+      ansible.posix.acl:
+        path: "{{ smb_share_path }}"
+        entity: sambashare
+        etype: group
+        permissions: rwx
+        default: yes
+        state: present
+
+    - name: Write /etc/samba/smb.conf with ACL-friendly settings
       copy:
         dest: /etc/samba/smb.conf
         content: |
@@ -67,15 +103,22 @@
               security = user
               server min protocol = SMB2_10
               server max protocol = SMB3
+              disable netbios = yes
+              dns proxy = no
+              vfs objects = acl_xattr
+              map acl inherit = yes
+              store dos attributes = yes
 
           [{{ smb_share_name }}]
               path = {{ smb_share_path }}
               browseable = yes
-              writable = yes
+              writable  = yes
+              valid users = @sambashare
+              force group = sambashare
               create mask = 0660
               directory mask = 2770
-              force group = sambashare
-              valid users = @sambashare
+              inherit acls = yes
+              inherit permissions = yes
       notify: Restart smbd
 
     - name: Ensure smbd is enabled and running
